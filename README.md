@@ -1,58 +1,57 @@
-# EGX Bot — ماسح أسهم البورصة المصرية (Telegram)
+# EGX Swing-Trading Scanner & Backtester
 
-يمسح أسهم EGX30 كل يوم (مرتين أثناء الجلسة ومرة بعد الإغلاق) ويبعتلك على Telegram: فرص الشراء (مع الوقف والهدف وعدد الأسهم وسطر أخبار بالذكاء الاصطناعي)، وإشارات الخروج. **مفيش تنفيذ تلقائي**، إنت اللي بتنفذ على Thndr.
+A personal learning project: a daily scanner for 28 Egyptian Exchange (EGX) stocks that sends buy/exit signals to Telegram, plus a backtester that tests the same rules on historical data.
 
-## الملفات
-| ملف | وظيفته |
+> **Not financial advice.** This is an educational project. The backtest results below are mixed, and the strategy did not beat buy-and-hold.
+
+![Telegram alert](telegram_alert.png)
+
+## What it does
+
+- **Scanner** (`scanner.py`): after market close, downloads daily prices via `yfinance`, computes indicators, and sends a ranked list of buy candidates with an ATR-based stop-loss, a 2:1 reward/risk target, and a position size (2% risk per trade, 25% max per stock).
+- **Strategy** (`strategy.py`): SMA20/SMA50 trend, MACD histogram, RSI, ATR. The *same functions* are used by both scanner and backtester, so backtest results describe what the scanner actually does.
+- **Backtester** (`backtest.py`): event-driven simulation with no look-ahead. Signals come from the day's close and fills happen at the next day's open. It includes 0.25% fees per side, gap handling, and conservative fills (if stop and target are both touched on one day, the stop is assumed to hit first). Max 5 open positions.
+- **News note** (`news.py`): fetches recent Arabic headlines from Google News RSS and asks an LLM (Groq) to label them as supportive / negative / neutral. The LLM only summarizes. All trade decisions are rule-based.
+- **Automation**: designed to run on a scheduled GitHub Actions workflow, with state (capital, holdings) stored in Supabase and commands handled via Telegram. Actions are disabled in this public repo; I run it from a private copy.
+
+## Backtest results (2022-01 to 2026-11, 28 stocks, EGP 50,000 start)
+
+| Metric | Result |
 |---|---|
-| `strategy.py` | قواعد الاستراتيجية (مكان واحد للماسح والـ Backtest) + قايمة الأسهم |
-| `scanner.py` | الماسح اليومي + أوامر Telegram |
-| `backtest.py` | اختبار الاستراتيجية على الماضي |
-| `news.py` | أخبار كل سهم + تقييم Groq |
-| `.github/workflows/scan.yml` | التشغيل التلقائي على GitHub |
-| `supabase_schema.sql` | جدولين: signals و settings |
+| Total return (nominal EGP) | +138.2% (about 19.8% per year) |
+| Max drawdown | -34.7% |
+| Trades | 473 (40% winners) |
+| Avg win / avg loss | +12.4% / -6.6% |
+| Profit factor | 1.19 |
+| Equal-weight buy-and-hold of the same stocks | +400.7% |
 
-## 1) جهّز Supabase (مرة واحدة)
-افتح SQL Editor وشغّل `supabase_schema.sql` (فيه جدول `settings` الجديد).
+**Conclusion:** the rule set is not robust enough to trade with real capital. It underperformed buy-and-hold.
 
-## 2) جرّب على جهازك
-```
+## Known limitations
+
+- **Survivorship bias:** the stock list was chosen with hindsight.
+- **No out-of-sample test:** no walk-forward validation, and parameters are fixed.
+- **Nominal returns:** EGP inflation and devaluation over this period inflate all figures, including buy-and-hold.
+- **Scanner vs backtester:** the scanner sizes each signal independently and does not cap total open positions at 5 like the backtester does.
+- **Data quality:** Yahoo Finance data for EGX can be incomplete (some tickers are skipped).
+
+## Run locally
+
+```bash
 pip install -r requirements.txt
-copy .env.example .env      # واملأ المفاتيح
-python scanner.py --dry     # عرض فقط
-python scanner.py --sync    # (مرة واحدة) ينقل رصيدك وأسهمك لـ Supabase
+python backtest.py          # no API keys needed
+cp .env.example .env        # fill in keys for the scanner
+python scanner.py --dry     # print results without sending
 ```
 
-## 3) الاختبار على الماضي
-```
-python backtest.py
-```
-اقرأ النتيجة بعناية قبل ما تعتمد على الإشارات (Profit Factor أكبر من 1.2 وعدد صفقات 30+ على الأقل).
+Supabase is optional for local runs. See `supabase_schema.sql` for the tables.
 
-## 4) التشغيل على GitHub (من غير لاب)
-1. اعمل **Private repository** جديد على GitHub.
-2. ارفع كل الملفات **ما عدا `.env`** (مهم جداً). لو فولدر `.github` ما اترفعش بالسحب، اعمل ملف بالاسم `.github/workflows/scan.yml` من زر Add file ← Create new file والصق محتواه.
-3. Settings ← Secrets and variables ← Actions ← New repository secret، وضيف:
-   `TELEGRAM_BOT_TOKEN` و`TELEGRAM_CHAT_ID` و`SUPABASE_URL` و`SUPABASE_KEY` و`GROQ_API_KEY` (و`GROQ_MODEL` اختياري).
-4. تبويب Actions ← EGX Scanner ← Run workflow (تشغيل تجريبي).
-5. لو نجح، **وقّف مهمة ويندوز** عشان الرسايل متتكررش:
-   `Unregister-ScheduledTask -TaskName "EGX Scanner" -Confirm:$false`
+## Next steps
 
-## الرسايل أثناء الجلسة (جديد)
-بيبعت 3 رسايل في اليوم (الأحد–الخميس، بتوقيت القاهرة): **~11:30** و**~13:30** أثناء الجلسة بأسعار اليوم الحالية، و**~15:00** بعد الإغلاق بأسعار الإغلاق النهائية.
-- الأسعار اللحظية من Yahoo **متأخرة حوالي 20 دقيقة** عن البورصة، ورأس الرسالة بيوضّح وقت آخر تحديث.
-- لو Yahoo ما أعطاش أسعار اليوم، الرسالة بتقولك بوضوح وبتستخدم آخر إغلاق.
-- الإشارات أثناء الجلسة مؤقتة وممكن تتغير عند الإغلاق، ومبتتسجلش في Supabase (بس رسالة ما بعد الإغلاق بتتسجل).
-- اختبار سريع لو Yahoo بيدّي بيانات اللحظة (شغّله والسوق مفتوح): 
-  `python -c "import yfinance as yf; print(yf.Ticker('COMI.CA').history(period='1d', interval='5m').tail(3))"`
-- تشغيل يدوي: `python scanner.py --live` (أثناء الجلسة) أو `--no-live` (آخر إغلاق). من غير خيارات بيختار حسب الوقت.
-- لتغيير المواعيد: عدّل `SLOTS` في `scanner.py` وجدول `cron` في `scan.yml`.
+- Walk-forward / out-of-sample validation
+- Fix position-cap mismatch between scanner and backtester
+- Replace hand-written rules with an ML classifier and compare against this baseline
 
-## أوامر Telegram
-`رصيد 80000` — `محفظتي COMI ETEL` — `محفظتي مفيش` — `حالة`
-على GitHub بتتنفذ خلال 6 ساعات كحد أقصى (أو فوراً مع تشغيل يدوي).
+## Stack
 
-## تنبيهات
-- الأسعار متأخرة ~20 دقيقة على الأقل (وبعد الإغلاق آخر إغلاق). المؤشرات بتبص على الماضي، والـ Backtest مبني على الإغلاق مش على أسعار أثناء الجلسة.
-- GitHub ممكن يتأخر في التشغيل المجدول، وبيوقّف المهام المجدولة لو الريبو ما فيهوش نشاط 60 يوم (فعّلها من Actions).
-- للاستئناس فقط وليست نصيحة استثمارية.
+Python, pandas, yfinance, Supabase, Telegram Bot API, Groq API, GitHub Actions
